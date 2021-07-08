@@ -1,0 +1,679 @@
+---
+title: "A novel mass spectrometry-based method for the identification of subtype specific amyloidogenic proteins"
+output:
+
+editor_options:
+  chunk_output_type: inline
+---
+
+Contained in this document is the R scripts necessary to reproduce the results from Palstroem et al. "A novel mass spectrometry-based method for the identification of subtype specific amyloidogenic proteins". This document was created under R 4.0.0 and RStudio 1.2.5001.
+
+
+-----------------------------------------
+               CONTENTS
+-----------------------------------------
+ 
+* Preparation steps
+  + Load packages
+  + Import data
+  + Remove NAs, and whatever
+
+* Creating training and test dataset
+
+* Feature selection - Boruta
+  + Step 1 - Differentiating between Congo Red positive and negative samples
+  + Step 2 - Recognizition of subtypes
+
+* Establish optimal model parameters (Tuning):
+  + Step 1
+  + Step 2
+
+* Model building
+  + Step 1 
+    + Extra proteins identified by Boruta
+  + Step 2
+
+* Test set
+  + Step 1 
+  + Step 2
+
+* Validation set
+  + Step 1
+  + Step 2
+
+-----------------------------------------
+-----------------------------------------
+
+#Preparation steps
+
+###Install required packages
+```{r Install required packages, eval=FALSE, include=FALSE, error=TRUE}
+install.packages(c("readxl","dplyr","Boruta","caret","e1071"),repos="https://cloud.r-project.org")
+```
+###Load required packages
+```{r Load packages, error=TRUE}
+library(readxl) #Required for import of Excel data
+library(dplyr) #Required for some of the data wrangling
+library(Boruta) #Required for Feature Selection
+library(caret) #Required for Data Partitioning
+library(e1071) #Required for building the Support Vector Machine model
+```
+
+
+###Import the provided main dataset
+```{r Main dataset import,error=TRUE}
+Main_Dataset<-read_excel(file.choose(),sheet = "Main_Dataset") #Select the provided .xlsx document from the folder to which it is located
+```
+
+###Import the validation dataset
+```{r Validation dataset import, error=TRUE}
+Validation_Dataset<-read_excel(file.choose(),sheet = "Validation_Dataset") #Select the provided .xlsx document from the folder to which it is located
+```
+
+###Define the columns "Status" and "Diagnosis" as factors in the Main Dataset
+```{r,error=TRUE}
+#Main dataset
+Main_Dataset$Status<-as.factor(Main_Dataset$Status)
+Main_Dataset$Diagnosis<-as.factor(Main_Dataset$Diagnosis)
+```
+
+... And the Validation Dataset
+```{r error=TRUE}
+#Validation data
+Validation_Dataset$Diagnosis<-as.factor(Validation_Dataset$Diagnosis)
+Validation_Dataset$Status<-as.factor(Validation_Dataset$Status)
+```
+
+#Training and test dataset
+
+###Step 1
+
+####Partition the main dataset into a training dataset and a test dataset according to the "Status" column. 
+
+*The data is randomly split with 70% allocated to the Training dataset and the remaining 30% is allocated to the Test Dataset*
+
+```{r,error=TRUE}
+set.seed(1) #Setting the seed for the pseudorandom number generator
+index<- createDataPartition(Main_Dataset$Status, p = 0.7, list = FALSE) #caret package must be loaded
+Training_Data <- Main_Dataset[index,]
+Test_Data <- Main_Dataset[-index,]
+```
+
+###Step 2
+
+####Remove Congo-Red negative samples from the dataset to build model for recognition of subtypes:
+```{r,error=TRUE}
+Data_only_subtypes<-Main_Dataset[Main_Dataset$Status=="1",]
+```
+
+#####Overlook of the distribution of subtypes:
+```{r,error=TRUE}
+summary(Data_only_subtypes$Diagnosis)
+```
+
+####Partition the dataset containing only Congo-Red positive samples into a training dataset and a test dataset. The datasets are split randomly 70:30.
+```{r,error=TRUE}
+set.seed(1)
+index_diagnosis<- createDataPartition(Data_only_subtypes$Diagnosis, p = 0.7, list = FALSE) #caret package must be loaded.
+Training_Data_only_subtypes <- Data_only_subtypes[index_diagnosis, ]
+Test_Data_only_subtypes <- Data_only_subtypes[-index_diagnosis, ]
+```
+
+
+#Feature Selection
+
+###Boruta Feature Selection - Identification of Congo-Red positive samples:
+```{r,error=TRUE}
+set.seed(1)
+Boruta_Output_Congo<-Boruta(Status~. ,data=Training_Data[c(2,4:ncol(Training_Data))],doTrace=0) #Boruta package must be loaded
+Boruta_Attributes_Extraction_Congo <- getSelectedAttributes(Boruta_Output_Congo, withTentative = FALSE)
+print(Boruta_Attributes_Extraction_Congo) 
+Boruta_Congo_Statistics<-attStats(Boruta_Output_Congo) #
+```
+
+####Extract Top 10 most important proteins for differentiating between Congo-Red positive and negative samples:
+```{r}
+Training_Data_only_Top10<- Training_Data %>% select(Patients,Status, Diagnosis,P10909,P02743,P06727,P04004,P02649,P02748,P12109,P12110,P12111,P23142)
+```
+
+###Boruta Feature Selection - Identification of proteins important for subtype classification:
+```{r,error=TRUE}
+set.seed(1)
+Boruta_Output_Subtype<-Boruta(Diagnosis~. ,data=Training_Data_only_subtypes[c(3,4:ncol(Training_Data_only_subtypes))],doTrace=0) #Boruta package must be loaded
+Boruta_Attributes_Extraction_Subtype <- getSelectedAttributes(Boruta_Output_Subtype, withTentative = FALSE)
+print(Boruta_Attributes_Extraction_Subtype) 
+Boruta_Subtype_Statistics<-attStats(Boruta_Output_Subtype)
+```
+
+####Subset dataset to only include subtype-associated proteins
+```{r,error=TRUE}
+Training_Data_Subtypes<- Training_Data_only_subtypes %>% select(Patients,Status, Diagnosis,P02766,P0DOY2,P0DOX8,P0DOX7,P01834,P0DJI8,P0DJI9)
+Test_Data_Subtypes<-Test_Data_only_subtypes %>% select(Patients,Status, Diagnosis,P02766,P0DOY2,P0DOX8,P0DOX7,P01834,P0DJI8,P0DJI9)
+```
+
+
+#Model Building
+
+###Step 1
+
+####APOA4
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4<-predict(SVM_model1_APOA4_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4<-predict(SVM_model1_APOA4_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4,Test_Data$Status,positive="1")
+```
+
+####APOE
+```{r,error=TRUE}
+
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOE_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,8)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOE_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOE_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,8)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOE_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOE_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOE<-predict(SVM_model1_APOE_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOE,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOE<-predict(SVM_model1_APOE_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOE,Test_Data$Status,positive="1")
+```
+
+####SAP
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_SAP_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,5)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_SAP_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_SAP_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,5)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_SAP_only$best.parameters$gamma, cost=Model1_tuning_parameters_SAP_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_SAP<-predict(SVM_model1_SAP_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_SAP,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_SAP<-predict(SVM_model1_SAP_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_SAP,Test_Data$Status,positive="1")
+```
+####Clusterin
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_Clusterin_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,4)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_Clusterin_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_Clusterin_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,4)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_Clusterin_only$best.parameters$gamma, cost=Model1_tuning_parameters_Clusterin_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_Clusterin<-predict(SVM_model1_Clusterin_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_Clusterin,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_Clusterin<-predict(SVM_model1_Clusterin_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_Clusterin,Test_Data$Status,positive="1")
+```
+####Vitronectin
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_Vitronectin_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,7)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_Vitronectin_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_Vitronectin_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,7)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_Vitronectin_only$best.parameters$gamma, cost=Model1_tuning_parameters_Vitronectin_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_Vitronectin<-predict(SVM_model1_Vitronectin_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_Vitronectin,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_Vitronectin<-predict(SVM_model1_Vitronectin_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_Vitronectin,Test_Data$Status,positive="1")
+```
+####Complement component C9
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_Complement_C9_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,9)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_Complement_C9_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_Complement_C9_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,9)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_Complement_C9_only$best.parameters$gamma, cost=Model1_tuning_parameters_Complement_C9_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_Complement_C9<-predict(SVM_model1_Complement_C9_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_Complement_C9,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_Complement_C9<-predict(SVM_model1_Complement_C9_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_Complement_C9,Test_Data$Status,positive="1")
+```
+####COL6A1
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_COL6A1_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,10)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_COL6A1_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_COL6A1_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,10)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_COL6A1_only$best.parameters$gamma, cost=Model1_tuning_parameters_COL6A1_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_COL6A1<-predict(SVM_model1_COL6A1_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_COL6A1,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_COL6A1<-predict(SVM_model1_COL6A1_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_COL6A1,Test_Data$Status,positive="1")
+```
+####COL6A2
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_COL6A2_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,11)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_COL6A2_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_COL6A2_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,11)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_COL6A2_only$best.parameters$gamma, cost=Model1_tuning_parameters_COL6A2_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_COL6A2<-predict(SVM_model1_COL6A2_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_COL6A2,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_COL6A2<-predict(SVM_model1_COL6A2_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_COL6A2,Test_Data$Status,positive="1")
+```
+####COL6A3
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_COL6A3_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,12)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_COL6A3_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_COL6A3_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,12)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_COL6A3_only$best.parameters$gamma, cost=Model1_tuning_parameters_COL6A3_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_COL6A3<-predict(SVM_model1_COL6A3_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_COL6A3,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_COL6A3<-predict(SVM_model1_COL6A3_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_COL6A3,Test_Data$Status,positive="1")
+```
+####Fibulin-1
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_Fibulin1_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,13)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_Fibulin1_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_Fibulin1_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,13)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_Fibulin1_only$best.parameters$gamma, cost=Model1_tuning_parameters_Fibulin1_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_Fibulin1<-predict(SVM_model1_Fibulin1_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_Fibulin1,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_Fibulin1<-predict(SVM_model1_Fibulin1_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_Fibulin1,Test_Data$Status,positive="1")
+```
+####APOA4 and APOE
+
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_and_APOE_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_and_APOE_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_and_APOE_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_and_APOE_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_and_APOE_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_and_APOE<-predict(SVM_model1_APOA4_and_APOE_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_and_APOE,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_and_APOE<-predict(SVM_model1_APOA4_and_APOE_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_and_APOE,Test_Data$Status,positive="1")
+
+```
+#####APOA4, APOE and Clusterin
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_Clusterin_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,4)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_Clusterin_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_Clusterin_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,4)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_Clusterin_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_Clusterin_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_Clusterin<-predict(SVM_model1_APOA4_APOE_Clusterin_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_Clusterin,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_Clusterin<-predict(SVM_model1_APOA4_APOE_Clusterin_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_Clusterin,Test_Data$Status,positive="1")
+```
+#####APOA4, APOE and Vitronectin
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_Vitronectin_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,7)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_Vitronectin_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_Vitronectin_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,7)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_Vitronectin_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_Vitronectin_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_Vitronectin<-predict(SVM_model1_APOA4_APOE_Vitronectin_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_Vitronectin,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_Vitronectin<-predict(SVM_model1_APOA4_APOE_Vitronectin_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_Vitronectin,Test_Data$Status,positive="1")
+```
+#####APOA4, APOE and Complement component C9
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_C9_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,9)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_C9_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_C9_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,9)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_C9_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_C9_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_C9<-predict(SVM_model1_APOA4_APOE_C9_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_C9,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_C9<-predict(SVM_model1_APOA4_APOE_C9_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_C9,Test_Data$Status,positive="1")
+```
+#####APOA4, APOE and COL6A1
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_COL6A1_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,10)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_COL6A1_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_COL6A1_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,10)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_COL6A1_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_COL6A1_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_COL6A1<-predict(SVM_model1_APOA4_APOE_COL6A1_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_COL6A1,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_COL6A1<-predict(SVM_model1_APOA4_APOE_COL6A1_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_COL6A1,Test_Data$Status,positive="1")
+```
+#####APOA4, APOE and COL6A2
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_COL6A2_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,11)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_COL6A2_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_COL6A2_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,11)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_COL6A2_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_COL6A2_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_COL6A2<-predict(SVM_model1_APOA4_APOE_COL6A2_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_COL6A2,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_COL6A2<-predict(SVM_model1_APOA4_APOE_COL6A2_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_COL6A2,Test_Data$Status,positive="1")
+```
+#####APOA4, APOE and COL6A3
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_COL6A3_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,12)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_COL6A3_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_COL6A3_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,12)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_COL6A3_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_COL6A3_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_COL6A3<-predict(SVM_model1_APOA4_APOE_COL6A3_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_COL6A3,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_COL6A3<-predict(SVM_model1_APOA4_APOE_COL6A3_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_COL6A3,Test_Data$Status,positive="1")
+```
+##### APOA4, APOE and Fibulin-1
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_Fibulin1_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,13)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_Fibulin1_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_Fibulin1_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,13)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_Fibulin1_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_Fibulin1_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_Fibulin1<-predict(SVM_model1_APOA4_APOE_Fibulin1_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_Fibulin1,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_Fibulin1<-predict(SVM_model1_APOA4_APOE_Fibulin1_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_Fibulin1,Test_Data$Status,positive="1")
+```
+####APOA4, APOE and SAP
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model1_tuning_parameters_APOA4_APOE_SAP_only<-tune.svm(Status~., data = Training_Data_only_Top10[c(2,6,8,5)], sampling = "fix", gamma = 2^c(-15,-10,-5,5,10,15), cost = 2^c(-15,-10,-5,5,10,15))
+Model1_tuning_parameters_APOA4_APOE_SAP_only$best.parameters
+
+#Train classifier
+set.seed(1)
+SVM_model1_APOA4_APOE_SAP_only<-svm(Status~.,data=Training_Data_only_Top10[c(2,6,8,5)],method="C-classification",kernel="linear", gamma=Model1_tuning_parameters_APOA4_APOE_SAP_only$best.parameters$gamma, cost=Model1_tuning_parameters_APOA4_APOE_SAP_only$best.parameters$cost,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+Train_model1_only_APOA4_APOE_SAP<-predict(SVM_model1_APOA4_APOE_SAP_only,newdata =Training_Data_only_Top10[4:13],decision.values=TRUE)
+confusionMatrix(Train_model1_only_APOA4_APOE_SAP,Training_Data_only_Top10$Status,positive="1")
+
+#Test classifier on Test Dataset
+Test_model1_only_APOA4_APOE_SAP<-predict(SVM_model1_APOA4_APOE_SAP_only,newdata = Test_Data[4:ncol(Test_Data)],decision.values=TRUE)
+confusionMatrix(Test_model1_only_APOA4_APOE_SAP,Test_Data$Status,positive="1")
+```
+
+
+####Validate results on the blinded, independent validation dataset:
+
+#####APOA4
+```{r}
+Validation_of_classifier_w_only_APOA4<-predict(SVM_model1_APOA4_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4)
+```
+
+#####APOE
+```{r}
+Validation_of_classifier_w_only_APOE<-predict(SVM_model1_APOE_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOE)
+```
+#####SAP
+```{r}
+Validation_of_classifier_w_only_SAP<-predict(SVM_model1_SAP_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_SAP)
+```
+#####Clusterin
+```{r}
+Validation_of_classifier_w_only_Clusterin<-predict(SVM_model1_Clusterin_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_Clusterin)
+```
+#####Vitronectin
+```{r}
+Validation_of_classifier_w_only_Vitronectin<-predict(SVM_model1_Vitronectin_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_Vitronectin)
+```
+#####Complement component C9
+```{r}
+Validation_of_classifier_w_only_C9<-predict(SVM_model1_Complement_C9_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_C9)
+```
+#####COL6A1
+```{r}
+Validation_of_classifier_w_only_COL6A1<-predict(SVM_model1_COL6A1_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_COL6A1)
+```
+#####COL6A2
+```{r}
+Validation_of_classifier_w_only_COL6A2<-predict(SVM_model1_COL6A2_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_COL6A2)
+```
+#####COL6A3
+```{r}
+Validation_of_classifier_w_only_COL6A3<-predict(SVM_model1_COL6A3_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_COL6A3)
+```
+#####Fibulin-1
+```{r}
+Validation_of_classifier_w_only_Fibulin1<-predict(SVM_model1_Fibulin1_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_Fibulin1)
+```
+#####APOA4 and APOE
+```{r}
+Validation_of_classifier_w_only_APOA4_and_APOE<-predict(SVM_model1_APOA4_and_APOE_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_and_APOE)
+```
+######APOA4, APOE and Clusterin
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_Clusterin<-predict(SVM_model1_APOA4_APOE_Clusterin_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_Clusterin)
+```
+######APOA4, APOE and Vitronectin
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_Vitronectin<-predict(SVM_model1_APOA4_APOE_Vitronectin_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_Vitronectin)
+```
+######APOA4, APOE and Complement component C9
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_C9<-predict(SVM_model1_APOA4_APOE_C9_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_C9)
+```
+######APOA4, APOE and COL6A1
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_COL6A1<-predict(SVM_model1_APOA4_APOE_COL6A1_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_COL6A1)
+```
+######APOA4, APOE and COL6A2
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_COL6A2<-predict(SVM_model1_APOA4_APOE_COL6A2_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_COL6A2)
+```
+######APOA4, APOE and COL6A3
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_COL6A3<-predict(SVM_model1_APOA4_APOE_COL6A3_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_COL6A3)
+```
+######APOA4, APOE and Fibulin-1
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_Fibulin1<-predict(SVM_model1_APOA4_APOE_Fibulin1_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_Fibulin1)
+```
+
+#####APOA4, APOE and SAP
+```{r}
+Validation_of_classifier_w_only_APOA4_APOE_SAP<-predict(SVM_model1_APOA4_APOE_SAP_only,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+summary(Validation_of_classifier_w_only_APOA4_APOE_SAP)
+```
+
+
+
+###Step 2
+#### Model with all Boruta selected proteins
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model2_tuning_parameters<-tune.svm(Diagnosis~ ., data=Training_Data_Subtypes[3:10],gamma = 2^c(-15,-10,-5,0,5,10,15), cost = 2^c(-15,-10,-5,0,5,10,15), sampling = "fix")
+Model2_tuning_parameters$best.parameters
+
+#Train classifier
+SVM_Subtype_Classifier<-svm(Diagnosis~.,data=Training_Data_Subtypes[3:10],method="C-classification",kernel="linear",gamma=Model2_tuning_parameters$best.parameters$gamma	,cost=Model2_tuning_parameters$best.parameters$cost ,decision.values=TRUE)
+
+#Test classifier on Training Dataset
+set.seed(1)
+summary(SVM_Subtype_Classifier)
+Training_subtype_prediction<-predict(SVM_Subtype_Classifier,newdata = Training_Data_Subtypes[4:10],decision.values=TRUE)
+confusionMatrix(Training_subtype_prediction,Training_Data_Subtypes$Diagnosis)
+
+#Test classifier on Test Dataset
+Test_subtype_prediction<-predict(SVM_Subtype_Classifier,newdata = Test_Data_Subtypes[4:10],decision.values=TRUE)
+confusionMatrix(Test_subtype_prediction,Test_Data_Subtypes$Diagnosis)
+
+#Validate classifier on Validation Dataset
+Validation_subtype_prediction<-predict(SVM_Subtype_Classifier,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+confusionMatrix(Validation_subtype_prediction,Validation_Dataset$Diagnosis)
+
+```
+
+#### Model with only the known amyloid-associated proteins included
+```{r,error=TRUE}
+#Establish optimal model parameters
+set.seed(1)
+Model2_tuning_parameters1<-tune.svm(Diagnosis~ ., data=Training_Data_Subtypes[c(3,4,6,7,9)],gamma = 2^c(-15,-10,-5,0,5,10,15), cost = 2^c(-15,-10,-5,0,5,10,15), sampling = "fix")
+Model2_tuning_parameters1$best.parameters
+
+#Train classifier
+SVM_Subtype_Classifier1<-svm(Diagnosis~.,data=Training_Data_Subtypes[c(3,4,6,7,9)],method="C-classification",kernel="linear",gamma=Model2_tuning_parameters1$best.parameters$gamma	,cost=Model2_tuning_parameters1$best.parameters$cost ,decision.values=TRUE)
+summary(SVM_Subtype_Classifier1)
+#Test classifier on Training Dataset
+set.seed(1)
+Training_subtype_prediction1<-predict(SVM_Subtype_Classifier1,newdata = Training_Data_Subtypes[4:10],decision.values=TRUE)
+confusionMatrix(Training_subtype_prediction1,Training_Data_Subtypes$Diagnosis)
+
+#Test classifier on Test Dataset
+Test_subtype_prediction1<-predict(SVM_Subtype_Classifier1,newdata = Test_Data_Subtypes[4:10],decision.values=TRUE)
+confusionMatrix(Test_subtype_prediction1,Test_Data_Subtypes$Diagnosis)
+
+#Validate classifier on Validation Dataset
+Validation_subtype_prediction1<-predict(SVM_Subtype_Classifier1,newdata = Validation_Dataset[4:ncol(Validation_Dataset)],decision.values=TRUE)
+confusionMatrix(Validation_subtype_prediction1,Validation_Dataset$Diagnosis)
+
+```
