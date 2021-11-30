@@ -1,2 +1,2 @@
 # Classification-model-for-Amyloidosis
-R Script related to "Model-assisted typing of amyloidosis by model-assisted mass spectrometry-based proteomics and artificial intelligence"
+R Script related to "Classification of amyloidosis by model-assisted mass spec-trometry-based proteomics"
